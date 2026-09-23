@@ -1,0 +1,9 @@
+.git
+.gitignore
+*.md
+.dockerignore
+Dockerfile
+# local artifacts
+*.test
+*.out
+bin/
