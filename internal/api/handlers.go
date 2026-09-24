@@ -6,9 +6,15 @@ import (
 	"github.com/gin-gonic/gin"
 
 	"delaunaysvc/internal/geom"
+	"delaunaysvc/internal/session"
 	"delaunaysvc/internal/triangulate"
 	"delaunaysvc/internal/voronoi"
 )
+
+// sessions is the process-wide store of incremental triangulation
+// sessions. Stateful session state lives here, separate from the
+// one-shot compute paths.
+var sessions = session.NewManager()
 
 // Register mounts the service routes on r.
 func Register(r *gin.Engine) {
@@ -16,6 +22,12 @@ func Register(r *gin.Engine) {
 	r.GET("/api/v1/sample", getSample)
 	r.POST("/api/v1/triangulate", postTriangulate)
 	r.POST("/api/v1/voronoi", postVoronoi)
+
+	r.POST("/api/v1/sessions", postSessionCreate)
+	r.GET("/api/v1/sessions/:id", getSession)
+	r.DELETE("/api/v1/sessions/:id", deleteSession)
+	r.POST("/api/v1/sessions/:id/points", postSessionInsert)
+	r.POST("/api/v1/sessions/:id/move", postSessionMove)
 }
 
 func healthz(c *gin.Context) {

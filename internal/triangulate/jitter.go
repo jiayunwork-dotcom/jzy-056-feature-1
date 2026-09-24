@@ -38,17 +38,33 @@ func jitterToGeneralPosition(local []geom.Point) {
 	if span == 0 {
 		span = 1
 	}
-	hx := generalPositionScale * span
-	hy := generalPositionScale * span
+	h := generalPositionScale * span
 	for i := range local {
-		// Distinct fractions in (-0.5, 0.5) per axis, deterministic in i.
-		fx := hashFraction(uint64(i), 0xA24BAED4963EE407) - 0.5
-		fy := hashFraction(uint64(i), 0x9FB21C651E98DF25) - 0.5
+		fx, fy := jitterFractions(i)
 		local[i] = geom.Point{
-			X: local[i].X + hx*fx,
-			Y: local[i].Y + hy*fy,
+			X: local[i].X + h*fx,
+			Y: local[i].Y + h*fy,
 		}
 	}
+}
+
+// jitterSpan returns the (fixed) perturbation magnitude for a session
+// whose initial, origin-translated points span span. The magnitude is
+// fixed once per mesh: points inserted or moved later on are nudged by
+// the same amount, which keeps the internal predicate frame rigid for
+// the mesh's whole lifetime.
+func jitterSpan(span float64) float64 {
+	if span == 0 {
+		span = 1
+	}
+	return generalPositionScale * span
+}
+
+// jitterFractions returns the deterministic per-axis fractions in
+// (-0.5, 0.5) assigned to point index i in the internal frame.
+func jitterFractions(i int) (fx, fy float64) {
+	return hashFraction(uint64(i), 0xA24BAED4963EE407) - 0.5,
+		hashFraction(uint64(i), 0x9FB21C651E98DF25) - 0.5
 }
 
 // hashFraction maps (seed, salt) to a deterministic value in [0, 1)
