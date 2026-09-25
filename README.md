@@ -16,6 +16,98 @@ There is no UI, no rendering — only the geometry kernel and a JSON API.
 Base path: `/api/v1`. All bodies are JSON. The service listens on
 `:8080` by default (override with `LISTEN_ADDR`).
 
+The service exposes two kinds of client:
+
+- **stateless** — one-shot compute endpoints (`/triangulate`, `/voronoi`,
+  `/sample`); a full mesh is built per request and nothing is retained;
+- **stateful incremental sessions** (`/api/v1/sessions…`) — create a
+  long-lived triangulation, then edit it by inserting or moving points.
+  Each edit is applied **locally** (only the affected "dig a hole,
+  re-fan" cavity is retriangulated) and returns just the triangles that
+  changed, so incremental renderers can patch the previous mesh instead
+  of receiving the whole net. Edits on one session handle are serialised
+  on the server; distinct handles are independent.
+
+### Stateful incremental sessions
+
+#### `POST /api/v1/sessions`
+
+Create a session from an initial point set (same point validation as
+`/triangulate`: at least 3, non-duplicate, non-collinear). Returns the
+handle plus the initial mesh.
+
+```json
+{ "points": [ {"x":0,"y":0}, {"x":4,"y":0}, {"x":4,"y":4}, {"x":0,"y":4} ] }
+```
+
+```json
+{
+  "session_id": 1,
+  "point_count": 4,
+  "triangles": [ {"a":2,"b":0,"c":1}, {"a":3,"b":0,"c":2} ],
+  "hull": [0, 1, 2, 3]
+}
+```
+
+Point indices are the stable identity of a point for the whole life of
+the session; an insert appends one new index, a move keeps the index.
+
+#### `POST /api/v1/sessions/:id/insert`
+
+Insert one point. Returns its new `point_id` and the local change set
+(the triangles removed and added by the cavity refan).
+
+Request: `{"x":2.0,"y":2.0}`
+
+```json
+{
+  "session_id": 1,
+  "point_id": 4,
+  "changes": {
+    "removed": [ {"a":2,"b":0,"c":1}, {"a":3,"b":0,"c":2} ],
+    "added":   [ {"a":4,"b":0,"c":1}, {"a":4,"b":1,"c":2},
+                 {"a":4,"b":2,"c":3}, {"a":4,"b":3,"c":0} ]
+  }
+}
+```
+
+Applying `removed` then `added` to the old triangle set yields exactly
+the current mesh.
+
+#### `POST /api/v1/sessions/:id/move`
+
+Move an existing point atomically: the point's star is collapsed, the
+hole is refilled and driven to Delaunay, then the point is re-inserted
+at the new location with the same cavity machinery. Request:
+
+```json
+{ "point_id": 4, "x": 3.0, "y": 1.0 }
+```
+
+Response carries the same `changes` envelope (an empty change set means
+the topology is unchanged, e.g. a move inside the same topological cell).
+
+#### `GET /api/v1/sessions/:id`
+
+Current point/triangle counts, full triangle list, hull ring and an
+`is_delaunay` flag.
+
+#### `DELETE /api/v1/sessions/:id`
+
+Destroys the session and releases its memory.
+
+After every accepted edit the session mesh is itself a legal Delaunay
+triangulation: every triangle satisfies the empty-circumcircle property
+in the exact predicate frame and the triangles cover the current convex
+hull without overlap or gap. Co-circular configurations may choose any
+valid diagonal (two co-circular meshes need not carry identical triangle
+sets), so tests/clients must verify a mesh **as it stands**, never by an
+exact triangle-set comparison against a from-scratch rebuild.
+
+Session errors are reported with the same structured envelope, e.g.
+`DUPLICATE_POINT` (400), `POINT_NOT_FOUND` (400) and
+`SESSION_NOT_FOUND` (404 for an unknown or already-destroyed handle).
+
 ### `GET /healthz`
 
 ```json
@@ -96,9 +188,11 @@ All failures return `400` with one envelope:
 | Code                  | Meaning                                              |
 |-----------------------|------------------------------------------------------|
 | `TOO_FEW_POINTS`      | fewer than 3 points                                  |
-| `DUPLICATE_POINT`     | two exactly identical, undeclared input points       |
-| `INVALID_COORD`       | a coordinate is `NaN` or infinite at the kernel level|
+| `DUPLICATE_POINT`     | two exactly identical points (initial set, insert, or move) |
+| `INVALID_COORDINATE`  | a coordinate is `NaN` or infinite at the kernel level|
 | `ALL_POINTS_COLLINEAR`| every point lies on one line; hull area is zero      |
+| `POINT_NOT_FOUND`     | a session move names a point id that does not exist  |
+| `SESSION_NOT_FOUND`   | the session handle is unknown or already destroyed (`404`) |
 | `INVALID_JSON`        | body is not parseable JSON (includes non-finite JSON numbers such as `NaN`/`Infinity`) |
 | `DEGENERATE_GEOMETRY` | numerical degeneracy detected during construction    |
 
@@ -116,11 +210,25 @@ All failures return `400` with one envelope:
    response.
 3. **Bowyer–Watson.** For each new point the triangles whose
    circumcircle strictly contains it are found with a local adjacency
-   walk (a uniform-grid spatial index supplies the seed triangle); the
-   cavity boundary (edges occurring once) is extracted and the point is
-   fanned over it. Every fan triangle is oriented CCW with an exact
-   orientation test. A star-shape expansion across any non-visible
-   boundary edge keeps the cavity well-formed near hull insertions.
+   walk seeded by the triangle that geometrically contains the point
+   (a uniform-grid spatial index supplies the candidates); the cavity
+   boundary (edges occurring once) is extracted and the point is fanned
+   over it. Every fan triangle is oriented CCW with an exact orientation
+   test. A point landing on an existing edge splits that edge so both
+   sides close.
+3a. **Incremental sessions reuse this exact loop.** The stateless build
+   and the stateful session run the *same* cavity/fan routine; the
+   session simply keeps the triangle store, edge adjacency, per-vertex
+   stars, spatial index and super-triangle alive between edits, so only
+   the cavity triangles are touched per operation. A **move** collapses
+   the moved point's star, refills the hole by ear clipping and drives it
+   to Delaunay with edge flips, then re-runs the identical insertion loop
+   at the new coordinate. A rare order-dependent near-collinear sliver is
+   closed by a topological post-fan repair (a no-op on an ordinary cavity)
+   and, only if that still fails, an order/salt-robust whole rebuild that
+   is verified before it is accepted — so every returned mesh satisfies
+   the empty-circumcircle and hull-coverage guarantees. Each edit returns
+   only the removed/added triangle sets.
 4. **Adaptive exact predicates.** Orientation and in-circle signs are
    decided in two stages: a binary64 determinant with a proven
    forward-error bound (`(3+16ε)ε` for orientation, a conservative
@@ -189,7 +297,13 @@ curl -s -XPOST localhost:8080/api/v1/triangulate \
 - Voronoi vertices equal exact circumcenters, dual edges are
   perpendicular bisectors, one ray per hull edge;
 - rejection of too-few, duplicate, non-finite and collinear inputs;
-- the sample grid's triangle count pinned to **18**.
+- the sample grid's triangle count pinned to **18**;
+- **stateful sessions** (long randomised insert/move/mixed series): at
+  every step the mesh passes the global empty-circumcircle check and
+  covers the convex hull, the returned change set applies exactly to the
+  previous mesh, and rejected edits (duplicate, unknown point, unknown /
+  destroyed handle) leave the mesh intact; includes concurrent-session
+  and end-to-end HTTP tests.
 
 ## Layout
 
@@ -197,9 +311,13 @@ curl -s -XPOST localhost:8080/api/v1/triangulate \
 cmd/delaunayd/          service entrypoint (HTTP bootstrap only)
 internal/geom/          points/triangles, predicates+tolerance,
                         circumcircle, validation, convex hull
-internal/triangulate/   Bowyer–Watson insertion, cavity, hull ring,
-                        empty-circle verification
+internal/triangulate/   stateless Build + the stateful incremental Mesh
+                        (cavity/fan insert, star-collapse move, local
+                        sliver repair, robust rebuild, change-set diff)
+internal/session/       long-lived session handles, serialised edits,
+                        input rejection and explicit destruction
 internal/voronoi/       Voronoi dual export
 internal/sample/        built-in perturbed-grid reference case
 internal/api/           Gin routes, request binding, JSON DTOs
+                        (stateless endpoints and session endpoints)
 ```

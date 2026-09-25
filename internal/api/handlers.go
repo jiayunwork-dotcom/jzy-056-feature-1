@@ -95,5 +95,10 @@ func fail(c *gin.Context, status int, code, msg string) {
 }
 
 func failError(c *gin.Context, e *geom.Error) {
-	fail(c, http.StatusBadRequest, string(e.Code), e.Message)
+	status := http.StatusBadRequest
+	switch e.Code {
+	case geom.ErrSessionNotFound:
+		status = http.StatusNotFound
+	}
+	fail(c, status, string(e.Code), e.Message)
 }

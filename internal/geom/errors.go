@@ -14,6 +14,12 @@ const (
 	ErrInvalidCoord   ErrorCode = "INVALID_COORDINATE"
 	ErrAllCollinear   ErrorCode = "ALL_POINTS_COLLINEAR"
 	ErrDegenerate     ErrorCode = "DEGENERATE_GEOMETRY"
+	// ErrPointNotFound addresses a point id that no live session point
+	// carries; used by the stateful incremental session layer.
+	ErrPointNotFound ErrorCode = "POINT_NOT_FOUND"
+	// ErrSessionNotFound addresses a session handle that was never
+	// created or that has already been explicitly destroyed.
+	ErrSessionNotFound ErrorCode = "SESSION_NOT_FOUND"
 )
 
 // Error is the structured error returned by every geometry-kernel entry

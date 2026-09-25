@@ -24,6 +24,7 @@ func main() {
 	r := gin.New()
 	r.Use(gin.Logger(), gin.Recovery())
 	api.Register(r)
+	api.NewSessionRouter().Register(r)
 
 	log.Printf("delaunayd listening on %s", addr)
 	if err := r.Run(addr); err != nil {

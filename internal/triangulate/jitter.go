@@ -10,55 +10,50 @@ import "delaunaysvc/internal/geom"
 // nudge yields an effectively unambiguous sign).
 const generalPositionScale = 1e-12
 
-// jitterToGeneralPosition applies a deterministic, index-dependent,
-// pairwise-distinct perturbation to the (already origin-translated)
-// coordinates. The nudge in each axis is proportional to the set's
-// coordinate span, so it is scale-free, and is derived only from the
-// point's index via a deterministic integer hash, so repeated builds of
-// the same request produce byte-identical coordinates and therefore an
-// identical triangulation — eliminating predicate flip-flop on exactly
-// or nearly co-circular input.
+// jitterPoint applies the canonical deterministic, index-dependent,
+// pairwise-distinct perturbation (salt 0) the one-shot build applies to
+// every point: a splitmix64-derived fraction of the set's coordinate
+// span, distinct per axis and per stable point id. The stateful session
+// reuses it verbatim so topology never depends on insertion timing.
 //
-// The perturbation is purely geometric bookkeeping: output vertex
-// coordinates reported to callers are the original ones; only the
-// internal predicate frame is perturbed.
-func jitterToGeneralPosition(local []geom.Point) {
-	if len(local) == 0 {
-		return
-	}
-	minX, minY := local[0].X, local[0].Y
-	maxX, maxY := minX, minY
-	for _, p := range local[1:] {
-		minX = mathMin(minX, p.X)
-		maxX = mathMax(maxX, p.X)
-		minY = mathMin(minY, p.Y)
-		maxY = mathMax(maxY, p.Y)
-	}
-	span := mathMax(maxX-minX, maxY-minY)
-	if span == 0 {
-		span = 1
-	}
-	hx := generalPositionScale * span
-	hy := generalPositionScale * span
-	for i := range local {
-		// Distinct fractions in (-0.5, 0.5) per axis, deterministic in i.
-		fx := hashFraction(uint64(i), 0xA24BAED4963EE407) - 0.5
-		fy := hashFraction(uint64(i), 0x9FB21C651E98DF25) - 0.5
-		local[i] = geom.Point{
-			X: local[i].X + hx*fx,
-			Y: local[i].Y + hy*fy,
-		}
-	}
+// The perturbation is purely geometric bookkeeping: coordinates reported
+// to callers are always the originals.
+func jitterPoint(p geom.Point, id int, h float64) geom.Point {
+	return jitterPointSalt(p, id, h, 0)
 }
 
-// hashFraction maps (seed, salt) to a deterministic value in [0, 1)
-// using a splitmix64-style finalizer; different salts decorrelate the x
-// and y nudges.
-func hashFraction(seed uint64, salt uint64) float64 {
+// jitterPointSalt applies the general-position perturbation selected by
+// salt. Salt 0 reproduces the canonical scheme byte-for-byte (so all
+// normal-path topologies and the translation-invariance guarantees are
+// unchanged). Non-zero salts are used only by the order-robust fallback
+// to step off a sliver that the canonical perturbation happens to land
+// on; every salt still gives a pairwise-distinct, scale-free nudge.
+func jitterPointSalt(p geom.Point, id int, h float64, salt uint64) geom.Point {
+	var fx, fy float64
+	if salt == 0 {
+		fx = hashFraction2(uint64(id), 0xA24BAED4963EE407) - 0.5
+		fy = hashFraction2(uint64(id), 0x9FB21C651E98DF25) - 0.5
+	} else {
+		fx = hashFraction3(uint64(id), salt, 0) - 0.5
+		fy = hashFraction3(uint64(id), salt, 1) - 0.5
+	}
+	return geom.Point{X: p.X + h*fx, Y: p.Y + h*fy}
+}
+
+// hashFraction2 is the canonical two-word splitmix64 fraction.
+func hashFraction2(seed, salt uint64) float64 {
 	z := seed ^ salt
 	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
 	z = (z ^ (z >> 27)) * 0x94D049BB133111EB
 	z ^= z >> 31
-	// Map to [0,1) with 53-bit mantissa resolution.
+	return float64(z>>11) * (1.0 / 9007199254740992.0) // 2^53
+}
+
+// hashFraction3 is the three-word variant used by non-canonical salts.
+func hashFraction3(seed, salt, axis uint64) float64 {
+	z := seed ^ salt ^ (axis*0x9E3779B97F4A7C15 + 0xD1B54A32D192ED03)
+	z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9
+	z = (z ^ (z >> 27)) * 0x94D049BB133111EB
+	z ^= z >> 31
 	return float64(z>>11) * (1.0 / 9007199254740992.0) // 2^53
 }

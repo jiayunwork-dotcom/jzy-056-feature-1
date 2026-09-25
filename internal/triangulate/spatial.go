@@ -67,8 +67,8 @@ func (s *spatialIndex) cellOf(p geom.Point) cellKey {
 // by its axis-aligned bounding box. Triangles whose box spans too many
 // cells (the large ghost triangles hugging the super-triangle) go to the
 // oversize list instead, which is consulted on every query.
-func (s *spatialIndex) insertTriangle(id int, t workTri, coords []geom.Point) workTri {
-	pa, pb, pc := coords[t.a], coords[t.b], coords[t.c]
+func (s *spatialIndex) insertTriangle(id int, t workTri, m *Mesh) workTri {
+	pa, pb, pc := m.at(t.a), m.at(t.b), m.at(t.c)
 	x0 := math.Min(pa.X, math.Min(pb.X, pc.X))
 	x1 := math.Max(pa.X, math.Max(pb.X, pc.X))
 	y0 := math.Min(pa.Y, math.Min(pb.Y, pc.Y))
@@ -92,11 +92,14 @@ func (s *spatialIndex) insertTriangle(id int, t workTri, coords []geom.Point) wo
 }
 
 // removeIn drops dead triangle id from every bucket (or the oversize
-// list) it occupied.
+// list) it occupied. A fresh slice is allocated: bucket backing arrays
+// can be shared views that an ongoing candidate lookup is reading, and
+// rewriting in place with [:0] would mutate that view.
 func (s *spatialIndex) removeIn(id int, t workTri) {
 	if t.over {
-		out := s.oversize[:0]
-		for _, x := range s.oversize {
+		old := s.oversize
+		out := make([]int, 0, len(old))
+		for _, x := range old {
 			if x != id {
 				out = append(out, x)
 			}
@@ -105,9 +108,9 @@ func (s *spatialIndex) removeIn(id int, t workTri) {
 		return
 	}
 	for _, k := range t.cells {
-		b := s.buckets[k]
-		out := b[:0]
-		for _, x := range b {
+		old := s.buckets[k]
+		out := make([]int, 0, len(old))
+		for _, x := range old {
 			if x != id {
 				out = append(out, x)
 			}
